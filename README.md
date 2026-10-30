@@ -10,6 +10,8 @@ statistics plus one bunch-enclosing box). A Transformer with view-position encod
 the 9 tokens and regresses the count. Each video is predicted from 5 fixed view-sets, and the
 reported value is their median.
 
+![Counting pipeline: view sampling, per-view features, view aggregation and count](assets/pipeline.png)
+
 ## Layout
 
 ```
