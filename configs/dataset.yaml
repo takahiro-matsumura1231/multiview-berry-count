@@ -1,0 +1,145 @@
+# Dataset specification.
+#
+# This file is the only place the dataset generation parameters live. The build step
+# reads it and writes the manifest; nothing downstream may add or remove a frame without
+# changing a value here and raising `version`.
+#
+# The dataset hash depends on the parsed values, not on comments, so comments may be
+# edited freely; changing any value invalidates generated datasets.
+
+version: "v2.1"
+
+source:
+  # Location of the raw videos (a relative path is resolved from the repository root).
+  # Manifests store video paths relative to it. --raw-root overrides it.
+  raw_root: "data/raw"   # directory holding the raw stage videos; edit to your local path
+
+  # A capture is admitted only if its filename matches exactly. The GT count lives in
+  # the filename, which is why no derived path may ever echo it (see naming.forbid).
+  filename_pattern: '^(?P<bunch>[A-Za-z]+\d+)_(?P<stage>\d+)_gt_(?P<count>\d+)\.(?P<ext>mp4|mov)$'
+  filename_pattern_flags: ["IGNORECASE"]
+  extensions: [".mp4", ".mov"]
+
+  exclude:
+    # Directories holding pre-extracted PNGs; their videos are crops of admitted ones.
+    dir_substrings: ["extractframe", "_frame"]
+    # Hand-marked rejects in the raw tree.
+    name_substrings: ["dup", "smbdelete", "trashed"]
+    path_substrings: ["trash"]
+    hidden_files: true
+
+  deduplicate:
+    # Basename collisions are collapsed only after checking that the content is identical.
+    key: "basename_with_extension"   # NOT the stem: the same stem can exist as .MOV and
+                                     # .mp4 with different content and must not be collapsed
+    require_byte_identical: true     # a non-identical collision is a hard error
+    hash: "sha256"
+    prefer: "shortest_path"          # tie-break among identical copies
+
+grouping:
+  # Leak unit. Everything derived from one bunch label -- every session, stage, take
+  # and frame -- must land in the same split.
+  leak_unit: "bunch_label"
+
+  # The bunch label is the filename prefix, so the same label in two sessions is
+  # merged. This is deliberately conservative: cross-session identity cannot be
+  # verified (a thinned bunch cannot regain berries, so labels shared across sessions
+  # are probably different physical bunches), and merging can only ever be safe.
+  # It costs some split granularity: fewer groups than (session, label) pairs.
+  merge_labels_across_sessions: true
+
+trim:
+  # HEAD: removes the ID panel. The opening frames can show a board with the bunch ID
+  # and count. The panel is not a single label -- it can list the whole thinning series
+  # for that bunch, so one surviving frame would leak every stage's ground truth at once.
+  #
+  # 2.0 s leaves a margin after the board is typically taken out of view.
+  head_sec: 2.0
+
+  # TAIL: none. What a tail trim would target (the camera drifting off the bunch at the
+  # end) is a view-quality issue, not a label leak, so excluding it would contradict the
+  # rule against quality-based exclusion. Keeping the tail also yields more frames.
+  tail_sec: 0.0
+
+  # Only the head is trimmed. Later frames are not audited: a tag that merely identifies
+  # the bunch is harmless, because under grouped CV evaluation bunches never appear in
+  # training.
+  audit_late_excursions: false
+
+frames:
+  # 4.0: at lower rates too many videos cannot supply enough distinct views for the
+  # larger view-set sizes. fps 4 keeps timestamps on exact 250 ms boundaries (fps 3
+  # would not).
+  fps: 4.0
+
+  # The grid is analytic and computed in INTEGER MILLISECONDS throughout:
+  #   duration_ms = round(ffprobe container duration * 1000)
+  #   K           = (duration_ms - head_ms - tail_ms) // step_ms
+  #   t_k         = head_ms + k * step_ms          for k in 0..K-1
+  #
+  # The integer arithmetic is load-bearing, not tidiness. Some videos have durations a
+  # few tenths of a millisecond below an exact frame boundary, and a float formula gains or loses a frame on them
+  # depending on how the duration was rounded on its way in. duration_ms is stored in the
+  # manifest so the verifier re-derives the grid exactly. Regression-tested in
+  # tests/test_spec.py.
+  #
+  # Extraction uses input-side `-ss` per frame; every later stage reads the emitted JPEGs,
+  # so there is no second mechanism to drift against. An fps-filter pass was rejected:
+  # much faster, but it selects neighbouring source frames.
+  grid: "analytic"
+  timestamp_rounding: "exact_ms"     # t_k is an integer number of ms by construction
+  duration_source: "ffprobe_format_duration"
+
+admission:
+  # The one mechanical, label-blind inclusion rule. It is computed from duration, trim
+  # and fps alone -- it never looks at a label, an image, or a model output -- and it is
+  # fixed here before any model result exists.
+  #
+  # 16 = the largest view-set size K used. A video that cannot supply K distinct views
+  # cannot be evaluated at all, so admitting it would mean silently changing K for some
+  # videos.
+  min_frames: 16
+
+  # Not permitted under this rule, and named so the boundary is unambiguous: dropping a
+  # video because a model scores badly on it, because a quality heuristic dislikes it,
+  # or because a threshold was tuned after seeing results.
+  forbid: ["model_performance", "quality_heuristic", "post_hoc_threshold"]
+
+image:
+  width: 640                          # height follows the source aspect ratio
+  format: "jpeg"
+  jpeg_quality: 92                    # -> ffmpeg -q:v 3, via int(31 - Q*0.3)
+  scale_filter: "scale=640:-1"
+
+  rotation:
+    # Most videos are stored landscape with a -90 display matrix; a few are stored
+    # portrait with none. Frames come out portrait because ffmpeg's default autorotate
+    # applies the correction, so this is pinned here as an explicit contract plus an
+    # assertion rather than left implicit.
+    policy: "apply_display_matrix"    # i.e. do NOT pass -noautorotate
+    assert_portrait: true             # every emitted frame must satisfy height > width
+    expected_display_sizes: ["1080x1920", "2160x3840"]
+    expected_output_size: "640x1138"
+
+naming:
+  frame_path: "frames/{bunch_id}/v{video_uid:05d}/f{frame_idx:06d}__t{timestamp_ms:08d}ms.jpg"
+  # Nothing that leaks the label or the split may appear in a path. Asserted by the
+  # dataset verifier, which greps every emitted path.
+  forbid: ["gt", "count", "train", "val", "test", "fold", "holdout", "dev"]
+
+identity:
+  # video_uid = index into the sorted list of admitted relative paths. Readable, but
+  # it renumbers if the admitted set changes, so the manifest also carries a hash of
+  # the path and the verifier asserts the uid <-> path mapping against the
+  # manifest. Any silent renumbering becomes a failed check rather than a wrong join.
+  video_uid: "sequential_over_sorted_relpath"
+  path_hash: "sha1_12"
+
+output:
+  root: "data/dataset_v2"
+  line_endings: "LF"                  # LF avoids CRLF mis-parsing in awk/cut
+  manifests:
+    videos: "manifests/videos.tsv"
+    frames: "manifests/frames.tsv"
+    excluded: "manifests/excluded.json"
+    audit: "manifests/audit.json"     # counts, hashes, ffmpeg version, spec hash

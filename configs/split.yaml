@@ -1,0 +1,16 @@
+# Nested bunch-level cross-validation split.
+version: "split-v1"
+
+split:
+  # Every video of one bunch label lands in the same fold at both levels.
+  leak_unit: "bunch_label"
+  outer_folds: 5     # outer test folds, each scored once
+  inner_folds: 4     # inner folds used only to choose the training epoch
+  seed: 42
+
+  stratify:
+    by: ["session", "median_gt_band", "distinct_gt_class"]
+    count_bands: [30, 40, 50, 60]        # <30, 30-39, 40-49, 50-59, 60+
+    distinct_gt_classes: [2, 5, 10]      # 1, 2-4, 5-9, 10+
+
+  balance: ["videos", "bunches", "fidelity_bunches", "total_gt"]

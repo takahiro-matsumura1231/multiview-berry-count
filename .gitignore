@@ -1,0 +1,28 @@
+# Data, model weights and run outputs are not distributed with the code.
+/data/
+/models/
+/results/
+/logs/
+*.pt
+*.pth
+*.onnx
+*.torchscript
+*.safetensors
+*.joblib
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.ruff_cache/
+.mypy_cache/

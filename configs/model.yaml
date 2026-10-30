@@ -1,0 +1,32 @@
+# Multi-view counter: ResNet-18 features + detection features -> View-token Transformer
+# with view-position encoding over K=9 ordered views.
+version: "multiview-v1"
+
+evaluation:
+  view_sets: 5          # M fixed view-sets per video at phases i/M; prediction = median
+
+model:
+  research:
+    backbone: "resnet18"             # ImageNet-initialised, fine-tuned in stage 1
+    feature_arm: "berry_global"      # 26 detection features per frame (det_features 23..48)
+    resolution: 448                  # frames are resized to resolution x resolution
+    backbone_views_per_set: 9
+    backbone_epochs: 12
+    backbone_batch: 8
+    lr_backbone: 0.0001
+    lr_head: 0.001
+    aggregator_max_epochs: 120       # the epoch is chosen on the inner folds
+    aggregator_batch: 64
+    aggregator_lr: 0.0003
+    aggregator_weight_decay: 0.05
+    aggregator_common:                 # View-token Transformer (feed-forward = 2 x model_dim)
+      model_dim: 512
+      layers: 2
+      heads: 4
+      dropout: 0.1
+      head_hidden: 256               # baseline aggregators only
+      head_dropout: 0.2
+      feedforward_dim: 1024          # baseline aggregators only
+
+training:
+  seeds: [0, 1, 2]
